@@ -11,10 +11,29 @@ function App() {
    * It manages:
    * - Theme state (light/dark) and applies it via [data-theme] for CSS variables.
    * - Uploaded file state from the UploadArea component.
+   * - Filter state for Application and Month selection.
    * - Minimal mocked metrics derived from basic state (no real Excel parsing yet).
    */
   const [theme, setTheme] = useState('light');
   const [uploadedFile, setUploadedFile] = useState(null);
+
+  // New filter state: Application and Month (compact format)
+  const [selectedApplication, setSelectedApplication] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState('');
+
+  // Options
+  const applicationOptions = useMemo(() => {
+    // Deduplicated application list with placeholder "Application" first
+    return [
+      'Application', 'App Dynamics', 'DataDog', 'Mele', 'MetriX', 'Octane',
+      'Watchmen', 'Elements', 'Logging', 'Splunk', 'Loadrunner', 'CNAP'
+    ];
+  }, []);
+
+  const monthOptions = useMemo(() => {
+    // Compact format with disabled placeholder "Month"
+    return ['Month', 'Apr-25', 'May-25', 'Jun-25', 'Jul-25'];
+  }, []);
 
   // Apply theme to document element for CSS variables
   useEffect(() => {
@@ -35,6 +54,17 @@ function App() {
     // Mock values when a file is present
     return { total: 120, resolved: 75, pending: 45 };
   }, [uploadedFile]);
+
+  // Handlers for selects (controlled)
+  const handleApplicationChange = (e) => {
+    const val = e.target.value;
+    setSelectedApplication(val === 'Application' ? '' : val);
+  };
+
+  const handleMonthChange = (e) => {
+    const val = e.target.value;
+    setSelectedMonth(val === 'Month' ? '' : val);
+  };
 
   return (
     <div className="App">
@@ -97,7 +127,57 @@ function App() {
 
           <div className="panel chart-panel">
             <h2 className="panel-title">Charts</h2>
-            <ChartPanel hasData={!!uploadedFile} />
+
+            {/* Filter Bar */}
+            <div className="filter-bar" role="region" aria-label="Chart filters">
+              <div className="filter-group">
+                <label htmlFor="application-select" className="filter-label">Application</label>
+                <select
+                  id="application-select"
+                  className="select"
+                  value={selectedApplication || 'Application'}
+                  onChange={handleApplicationChange}
+                  aria-label="Select Application"
+                >
+                  {applicationOptions.map(opt => (
+                    <option
+                      key={opt}
+                      value={opt}
+                      disabled={opt === 'Application'}
+                    >
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <label htmlFor="month-select" className="filter-label">Month</label>
+                <select
+                  id="month-select"
+                  className="select"
+                  value={selectedMonth || 'Month'}
+                  onChange={handleMonthChange}
+                  aria-label="Select Month"
+                >
+                  {monthOptions.map(opt => (
+                    <option
+                      key={opt}
+                      value={opt}
+                      disabled={opt === 'Month'}
+                    >
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <ChartPanel
+              hasData={!!uploadedFile}
+              application={selectedApplication}
+              month={selectedMonth}
+            />
           </div>
         </section>
       </main>
