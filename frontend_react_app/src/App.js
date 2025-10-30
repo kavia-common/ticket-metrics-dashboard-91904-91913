@@ -7,6 +7,8 @@ import MenuNav from './components/MenuNav';
 import FiltersBar from './components/FiltersBar';
 import SummaryCards from './components/SummaryCards';
 import DrillDownModal from './components/modals/DrillDownModal';
+import GaugeChart from './components/charts/GaugeChart';
+import TotalTicketsPanel from './components/panels/TotalTicketsPanel';
 
 import TicketVolumeView from './views/TicketVolumeView';
 import ResponseView from './views/ResponseView';
@@ -211,6 +213,48 @@ function App() {
               </div>
             ) : (
               <>
+                {/* Derive selected application and values for gauge and total panel */}
+                {(() => {
+                  // Determine if a single application is selected
+                  const selectedApps = filters.applications || [];
+                  const hasSingleApp = selectedApps.length === 1;
+
+                  // Build a map app -> total received across filteredAgg
+                  const receivedByApp = new Map();
+                  filteredAgg.forEach(a => {
+                    receivedByApp.set(a.application, (receivedByApp.get(a.application) || 0) + Number(a.received || 0));
+                  });
+
+                  // current value follows selected application if exactly one selected, else overall total
+                  const currentApp = hasSingleApp ? selectedApps[0] : null;
+                  const currentValue = hasSingleApp
+                    ? (receivedByApp.get(currentApp) || 0)
+                    : Array.from(receivedByApp.values()).reduce((s, n) => s + n, 0);
+
+                  // max across dataset for gauge scale
+                  const maxValue = receivedByApp.size
+                    ? Math.max(...Array.from(receivedByApp.values()))
+                    : Math.max(1, Number(summary.totalTickets || 1));
+
+                  // Layout: top row with TotalTicketsPanel + GaugeChart
+                  return (
+                    <div style={{ display: 'grid', gridTemplateColumns: '0.6fr 1.4fr', gap: 12, marginBottom: 12 }}>
+                      <TotalTicketsPanel
+                        value={currentValue}
+                        title={hasSingleApp ? `Total Tickets — ${currentApp}` : 'Total Tickets — All'}
+                        subtitle={'Source: "No of Tickets Received"'}
+                      />
+                      <GaugeChart
+                        value={currentValue}
+                        max={maxValue || 1}
+                        title={hasSingleApp ? `Tickets Received — ${currentApp}` : 'Tickets Received — All'}
+                        caption={'"No of Tickets Received"'}
+                        height={220}
+                      />
+                    </div>
+                  );
+                })()}
+
                 {viewMode === VIEW_MODES.VOLUME && (
                   <TicketVolumeView data={filteredAgg} onPointClick={openDrillDown} />
                 )}
