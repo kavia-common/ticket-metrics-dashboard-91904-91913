@@ -56,7 +56,13 @@ export function normalizeRows(rows = []) {
       return isNaN(n) ? 0 : n;
     };
 
-    const received = toNum(mapped.received ?? r.received ?? r.Received);
+    // Prefer exact sheet column 'No of Tickets Received' if present, then common aliases
+    const received = toNum(
+      mapped.received ??
+      r['No of Tickets Received'] ??
+      r.received ??
+      r.Received
+    );
     const responded = toNum(mapped.responded ?? r.responded ?? r.Responded);
     const resolved = toNum(mapped.resolved ?? r.resolved ?? r.Resolved);
 
