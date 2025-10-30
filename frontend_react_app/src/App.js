@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import './App.css';
 import './index.css';
 import UploadArea from './components/UploadArea';
@@ -17,8 +17,9 @@ import SLAOverviewView from './views/SLAOverviewView';
 
 import { parseCsvToRows } from './utils/csvSchema';
 import { normalizeRows } from './utils/normalize';
-import { aggregateByAppMonth, buildFilterOptions, filterNormalizedRows, monthRangeFromData } from './utils/aggregate';
+import { filterNormalizedRows } from './utils/aggregate';
 import { exportAggregatedToCsv, exportPdfStub } from './utils/exporters';
+import { useFilteredData } from './utils/useFilteredData';
 
 /**
  * View Modes for menu navigation
@@ -45,7 +46,6 @@ function App() {
   // Data states
   const [rawRows, setRawRows] = useState([]);
   const [normalizedRows, setNormalizedRows] = useState([]);
-  const [aggregated, setAggregated] = useState([]); // array of { application, monthKey, monthLabel, ...metrics }
 
   // Filters and view
   const [filters, setFilters] = useState({
@@ -75,47 +75,28 @@ function App() {
     const norm = normalizeRows(rows);
     setNormalizedRows(norm);
 
-    const agg = aggregateByAppMonth(norm);
-    setAggregated(agg);
-
-    // Initialize filters based on data range
-    const range = monthRangeFromData(agg);
-    setFilters({
-      applications: [],
-      monthStart: range?.start ?? null,
-      monthEnd: range?.end ?? null,
-    });
+    // Initialize filters based on available data (use hook later to compute month range if needed)
+    setFilters(prev => ({ ...prev }));
   };
 
-  // Derived options and filtered datasets
-  const options = useMemo(() => buildFilterOptions(normalizedRows), [normalizedRows]);
-  const filteredRows = useMemo(() => filterNormalizedRows(normalizedRows, filters), [normalizedRows, filters]);
-  const filteredAgg = useMemo(() => aggregateByAppMonth(filteredRows), [filteredRows]);
+  // Centralized derived data
+  const {
+    options,
+    monthRange,
+    filteredRows,
+    filteredAgg,
+    summary,
+    receivedByApp,
+    currentValue,
+    maxValue,
+  } = useFilteredData(normalizedRows, filters);
 
-  // Summary for current filter context
-  const summary = useMemo(() => {
-    // Compute basic totals and adherence rates across filteredAgg
-    if (!filteredAgg.length) return { totalTickets: 0, avgRespondMTTR: 0, avgResolveMTTR: 0, respondAdh: 0, resolveAdh: 0 };
-    const totals = filteredAgg.reduce(
-      (acc, r) => {
-        acc.totalTickets += Number(r.received || 0);
-        acc.respondMTTR += Number(r.mttrRespond || 0);
-        acc.resolveMTTR += Number(r.mttrResolve || 0);
-        acc.respondAdh += Number(r.respondAdherence || 0);
-        acc.resolveAdh += Number(r.resolveAdherence || 0);
-        return acc;
-      },
-      { totalTickets: 0, respondMTTR: 0, resolveMTTR: 0, respondAdh: 0, resolveAdh: 0 }
-    );
-    const n = filteredAgg.length;
-    return {
-      totalTickets: totals.totalTickets,
-      avgRespondMTTR: +(totals.respondMTTR / n).toFixed(2),
-      avgResolveMTTR: +(totals.resolveMTTR / n).toFixed(2),
-      respondAdh: +(totals.respondAdh / n).toFixed(2),
-      resolveAdh: +(totals.resolveAdh / n).toFixed(2),
-    };
-  }, [filteredAgg]);
+  // When first data is loaded, if no month range set, set from monthRange
+  useEffect(() => {
+    if (!filters.monthStart && monthRange?.start) {
+      setFilters(f => ({ ...f, monthStart: monthRange.start, monthEnd: monthRange.end }));
+    }
+  }, [monthRange, filters.monthStart]);
 
   const onExportCsv = () => {
     exportAggregatedToCsv(filteredAgg, `metrics_export_${filters.monthStart || 'all'}_${filters.monthEnd || 'all'}.csv`);
@@ -213,47 +194,20 @@ function App() {
               </div>
             ) : (
               <>
-                {/* Derive selected application and values for gauge and total panel */}
-                {(() => {
-                  // Determine if a single application is selected
-                  const selectedApps = filters.applications || [];
-                  const hasSingleApp = selectedApps.length === 1;
-
-                  // Build a map app -> total received across filteredAgg
-                  const receivedByApp = new Map();
-                  filteredAgg.forEach(a => {
-                    receivedByApp.set(a.application, (receivedByApp.get(a.application) || 0) + Number(a.received || 0));
-                  });
-
-                  // current value follows selected application if exactly one selected, else overall total
-                  const currentApp = hasSingleApp ? selectedApps[0] : null;
-                  const currentValue = hasSingleApp
-                    ? (receivedByApp.get(currentApp) || 0)
-                    : Array.from(receivedByApp.values()).reduce((s, n) => s + n, 0);
-
-                  // max across dataset for gauge scale
-                  const maxValue = receivedByApp.size
-                    ? Math.max(...Array.from(receivedByApp.values()))
-                    : Math.max(1, Number(summary.totalTickets || 1));
-
-                  // Layout: top row with TotalTicketsPanel + GaugeChart
-                  return (
-                    <div style={{ display: 'grid', gridTemplateColumns: '0.6fr 1.4fr', gap: 12, marginBottom: 12 }}>
-                      <TotalTicketsPanel
-                        value={currentValue}
-                        title={hasSingleApp ? `Total Tickets — ${currentApp}` : 'Total Tickets — All'}
-                        subtitle={'Source: "No of Tickets Received"'}
-                      />
-                      <GaugeChart
-                        value={currentValue}
-                        max={maxValue || 1}
-                        title={hasSingleApp ? `Tickets Received — ${currentApp}` : 'Tickets Received — All'}
-                        caption={'"No of Tickets Received"'}
-                        height={220}
-                      />
-                    </div>
-                  );
-                })()}
+                <div style={{ display: 'grid', gridTemplateColumns: '0.6fr 1.4fr', gap: 12, marginBottom: 12 }}>
+                  <TotalTicketsPanel
+                    value={currentValue}
+                    title={(filters.applications || []).length === 1 ? `Total Tickets — ${(filters.applications || [])[0]}` : 'Total Tickets — All'}
+                    subtitle={'Source: "No of Tickets Received"'}
+                  />
+                  <GaugeChart
+                    value={currentValue}
+                    max={maxValue || 1}
+                    title={(filters.applications || []).length === 1 ? `Tickets Received — ${(filters.applications || [])[0]}` : 'Tickets Received — All'}
+                    caption={'"No of Tickets Received"'}
+                    height={220}
+                  />
+                </div>
 
                 {viewMode === VIEW_MODES.VOLUME && (
                   <TicketVolumeView data={filteredAgg} onPointClick={openDrillDown} />
