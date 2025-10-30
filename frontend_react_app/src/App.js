@@ -1,70 +1,129 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import './App.css';
+import './index.css';
 import UploadArea from './components/UploadArea';
 import MetricsSummary from './components/MetricsSummary';
-import ChartPanel from './components/ChartPanel';
+import MenuNav from './components/MenuNav';
+import FiltersBar from './components/FiltersBar';
+import SummaryCards from './components/SummaryCards';
+import DrillDownModal from './components/modals/DrillDownModal';
+
+import TicketVolumeView from './views/TicketVolumeView';
+import ResponseView from './views/ResponseView';
+import ResolutionView from './views/ResolutionView';
+import SLAOverviewView from './views/SLAOverviewView';
+
+import { parseCsvToRows } from './utils/csvSchema';
+import { normalizeRows } from './utils/normalize';
+import { aggregateByAppMonth, buildFilterOptions, filterNormalizedRows, monthRangeFromData } from './utils/aggregate';
+import { exportAggregatedToCsv, exportPdfStub } from './utils/exporters';
+
+/**
+ * View Modes for menu navigation
+ */
+const VIEW_MODES = {
+  VOLUME: 'Ticket Volume',
+  RESPOND: 'Response Efficiency',
+  RESOLVE: 'Resolution Efficiency',
+  SLA: 'SLA Adherence Overview',
+};
 
 // PUBLIC_INTERFACE
 function App() {
   /**
-   * This is the main application component for the Ticket Metrics Dashboard.
-   * It manages:
-   * - Theme state (light/dark) and applies it via [data-theme] for CSS variables.
-   * - Uploaded file state from the UploadArea component.
-   * - Filter state for Application and Month selection.
-   * - Minimal mocked metrics derived from basic state (no real Excel parsing yet).
+   * Main dashboard controller:
+   * - Handles theme switching
+   * - Handles CSV upload and parsing via PapaParse
+   * - Normalizes rows and aggregates by Application+Month (YYYY-MM)
+   * - Maintains filters and derived options
+   * - Renders menu-driven chart views, summary cards, and drill-down
    */
   const [theme, setTheme] = useState('light');
-  const [uploadedFile, setUploadedFile] = useState(null);
 
-  // New filter state: Application and Month (compact format)
-  const [selectedApplication, setSelectedApplication] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState('');
+  // Data states
+  const [rawRows, setRawRows] = useState([]);
+  const [normalizedRows, setNormalizedRows] = useState([]);
+  const [aggregated, setAggregated] = useState([]); // array of { application, monthKey, monthLabel, ...metrics }
 
-  // Options
-  const applicationOptions = useMemo(() => {
-    // Deduplicated application list with placeholder "Application" first
-    return [
-      'Application', 'App Dynamics', 'DataDog', 'Mele', 'MetriX', 'Octane',
-      'Watchmen', 'Elements', 'Logging', 'Splunk', 'Loadrunner', 'CNAP'
-    ];
-  }, []);
+  // Filters and view
+  const [filters, setFilters] = useState({
+    applications: [], // array of selected application names
+    monthStart: null, // YYYY-MM
+    monthEnd: null,   // YYYY-MM
+  });
+  const [viewMode, setViewMode] = useState(VIEW_MODES.VOLUME);
 
-  const monthOptions = useMemo(() => {
-    // Compact format with disabled placeholder "Month"
-    return ['Month', 'Apr-25', 'May-25', 'Jun-25', 'Jul-25'];
-  }, []);
+  // UI states
+  const [fileMeta, setFileMeta] = useState({ name: '', rows: 0 });
+  const [drillDown, setDrillDown] = useState({ open: false, application: null, monthKey: null });
 
-  // Apply theme to document element for CSS variables
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
   // PUBLIC_INTERFACE
-  const toggleTheme = () => {
-    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+  const toggleTheme = () => setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+
+  // Handle CSV upload and parsing
+  const handleCsvLoaded = async (file, csvText) => {
+    const rows = parseCsvToRows(csvText);
+    setRawRows(rows);
+    setFileMeta({ name: file.name, rows: rows.length });
+
+    const norm = normalizeRows(rows);
+    setNormalizedRows(norm);
+
+    const agg = aggregateByAppMonth(norm);
+    setAggregated(agg);
+
+    // Initialize filters based on data range
+    const range = monthRangeFromData(agg);
+    setFilters({
+      applications: [],
+      monthStart: range?.start ?? null,
+      monthEnd: range?.end ?? null,
+    });
   };
 
-  // Mocked metrics derived from whether a file is present.
-  // Real parsing will populate meaningful values later.
-  const metrics = useMemo(() => {
-    if (!uploadedFile) {
-      return { total: 0, resolved: 0, pending: 0 };
-    }
-    // Mock values when a file is present
-    return { total: 120, resolved: 75, pending: 45 };
-  }, [uploadedFile]);
+  // Derived options and filtered datasets
+  const options = useMemo(() => buildFilterOptions(normalizedRows), [normalizedRows]);
+  const filteredRows = useMemo(() => filterNormalizedRows(normalizedRows, filters), [normalizedRows, filters]);
+  const filteredAgg = useMemo(() => aggregateByAppMonth(filteredRows), [filteredRows]);
 
-  // Handlers for selects (controlled)
-  const handleApplicationChange = (e) => {
-    const val = e.target.value;
-    setSelectedApplication(val === 'Application' ? '' : val);
+  // Summary for current filter context
+  const summary = useMemo(() => {
+    // Compute basic totals and adherence rates across filteredAgg
+    if (!filteredAgg.length) return { totalTickets: 0, avgRespondMTTR: 0, avgResolveMTTR: 0, respondAdh: 0, resolveAdh: 0 };
+    const totals = filteredAgg.reduce(
+      (acc, r) => {
+        acc.totalTickets += Number(r.received || 0);
+        acc.respondMTTR += Number(r.mttrRespond || 0);
+        acc.resolveMTTR += Number(r.mttrResolve || 0);
+        acc.respondAdh += Number(r.respondAdherence || 0);
+        acc.resolveAdh += Number(r.resolveAdherence || 0);
+        return acc;
+      },
+      { totalTickets: 0, respondMTTR: 0, resolveMTTR: 0, respondAdh: 0, resolveAdh: 0 }
+    );
+    const n = filteredAgg.length;
+    return {
+      totalTickets: totals.totalTickets,
+      avgRespondMTTR: +(totals.respondMTTR / n).toFixed(2),
+      avgResolveMTTR: +(totals.resolveMTTR / n).toFixed(2),
+      respondAdh: +(totals.respondAdh / n).toFixed(2),
+      resolveAdh: +(totals.resolveAdh / n).toFixed(2),
+    };
+  }, [filteredAgg]);
+
+  const onExportCsv = () => {
+    exportAggregatedToCsv(filteredAgg, `metrics_export_${filters.monthStart || 'all'}_${filters.monthEnd || 'all'}.csv`);
+  };
+  const onExportPdf = () => {
+    exportPdfStub();
   };
 
-  const handleMonthChange = (e) => {
-    const val = e.target.value;
-    setSelectedMonth(val === 'Month' ? '' : val);
-  };
+  const openDrillDown = (application, monthKey) => setDrillDown({ open: true, application, monthKey });
+  const closeDrillDown = () => setDrillDown({ open: false, application: null, monthKey: null });
 
   return (
     <div className="App">
@@ -80,104 +139,92 @@ function App() {
           </div>
         </div>
         <div className="navbar-right">
-          <span className="theme-badge" aria-label={`Current theme: ${theme}`}>
-            {theme === 'light' ? 'Light' : 'Dark'}
-          </span>
-          <button
-            className="btn theme-toggle-btn"
-            onClick={toggleTheme}
-            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-          >
+          <span className="theme-badge" aria-label={`Current theme: ${theme}`}>{theme === 'light' ? 'Light' : 'Dark'}</span>
+          <button className="btn theme-toggle-btn" onClick={toggleTheme} aria-label={`Switch theme`} title="Toggle theme">
             {theme === 'light' ? '🌙' : '☀️'}
           </button>
         </div>
       </nav>
 
-      {/* Page Header - subtle gradient and intro */}
+      {/* Page Header */}
       <header className="page-hero">
         <div className="page-hero-inner">
           <h1 className="page-title">Insights at a glance</h1>
-          <p className="page-subtitle">
-            Upload an Excel file (.xlsx or .xls) to view ticket metrics and visualize trends.
-          </p>
+          <p className="page-subtitle">Upload a CSV to view metrics and visualize trends by Application and Month.</p>
         </div>
       </header>
 
-      {/* Main Content Area */}
+      {/* Main Content */}
       <main className="content">
         <section className="content-grid">
           <div className="panel upload-panel">
             <h2 className="panel-title">Upload Data</h2>
-            <p className="panel-description">
-              Select your Excel file to begin. We support .xlsx and .xls formats.
-            </p>
-            <UploadArea onFileSelected={setUploadedFile} />
-            {uploadedFile && (
-              <div className="file-info" title={uploadedFile.name}>
-                Selected file: <strong>{uploadedFile.name}</strong>
-              </div>
-            )}
+            <p className="panel-description">Select your metrics CSV. Required columns include Application and Month along with counts/times.</p>
+            <UploadArea onCsvParsed={handleCsvLoaded} />
+            {fileMeta.name ? (
+              <div className="file-info">Loaded: <strong>{fileMeta.name}</strong> • Rows: <strong>{fileMeta.rows}</strong></div>
+            ) : null}
           </div>
 
           <div className="panel metrics-panel">
-            <h2 className="panel-title">Metrics Summary</h2>
-            <MetricsSummary metrics={metrics} />
+            <h2 className="panel-title">Summary</h2>
+            <SummaryCards
+              totalTickets={summary.totalTickets}
+              avgRespondMTTR={summary.avgRespondMTTR}
+              avgResolveMTTR={summary.avgResolveMTTR}
+              respondAdh={summary.respondAdh}
+              resolveAdh={summary.resolveAdh}
+              onExportCsv={onExportCsv}
+              onExportPdf={onExportPdf}
+              disabled={!normalizedRows.length}
+            />
           </div>
 
           <div className="panel chart-panel">
-            <h2 className="panel-title">Charts</h2>
+            <h2 className="panel-title">Explore</h2>
 
-            {/* Filter Bar */}
-            <div className="filter-bar" role="region" aria-label="Chart filters">
-              <div className="filter-group">
-                <label htmlFor="application-select" className="filter-label">Application</label>
-                <select
-                  id="application-select"
-                  className="select"
-                  value={selectedApplication || 'Application'}
-                  onChange={handleApplicationChange}
-                  aria-label="Select Application"
-                >
-                  {applicationOptions.map(opt => (
-                    <option
-                      key={opt}
-                      value={opt}
-                      disabled={opt === 'Application'}
-                    >
-                      {opt}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="filter-group">
-                <label htmlFor="month-select" className="filter-label">Month</label>
-                <select
-                  id="month-select"
-                  className="select"
-                  value={selectedMonth || 'Month'}
-                  onChange={handleMonthChange}
-                  aria-label="Select Month"
-                >
-                  {monthOptions.map(opt => (
-                    <option
-                      key={opt}
-                      value={opt}
-                      disabled={opt === 'Month'}
-                    >
-                      {opt}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <ChartPanel
-              hasData={!!uploadedFile}
-              application={selectedApplication}
-              month={selectedMonth}
+            <MenuNav
+              viewMode={viewMode}
+              setViewMode={setViewMode}
+              items={[
+                VIEW_MODES.VOLUME,
+                VIEW_MODES.RESPOND,
+                VIEW_MODES.RESOLVE,
+                VIEW_MODES.SLA,
+              ]}
             />
+
+            <FiltersBar
+              options={options}
+              filters={filters}
+              onChange={setFilters}
+              disabled={!normalizedRows.length}
+            />
+
+            {!normalizedRows.length ? (
+              <div className="chart-placeholder">
+                <div className="empty-state">
+                  <div className="empty-illustration" aria-hidden="true">📊</div>
+                  <div className="empty-title">No data yet</div>
+                  <div className="empty-desc">Upload a CSV to visualize ticket trends.</div>
+                </div>
+              </div>
+            ) : (
+              <>
+                {viewMode === VIEW_MODES.VOLUME && (
+                  <TicketVolumeView data={filteredAgg} onPointClick={openDrillDown} />
+                )}
+                {viewMode === VIEW_MODES.RESPOND && (
+                  <ResponseView data={filteredAgg} onPointClick={openDrillDown} />
+                )}
+                {viewMode === VIEW_MODES.RESOLVE && (
+                  <ResolutionView data={filteredAgg} onPointClick={openDrillDown} />
+                )}
+                {viewMode === VIEW_MODES.SLA && (
+                  <SLAOverviewView data={filteredAgg} onPointClick={openDrillDown} />
+                )}
+              </>
+            )}
           </div>
         </section>
       </main>
@@ -185,6 +232,18 @@ function App() {
       <footer className="footer">
         <span>© {new Date().getFullYear()} Ticket Metrics</span>
       </footer>
+
+      <DrillDownModal
+        open={drillDown.open}
+        onClose={closeDrillDown}
+        application={drillDown.application}
+        monthKey={drillDown.monthKey}
+        rows={filterNormalizedRows(normalizedRows, {
+          applications: drillDown.application ? [drillDown.application] : [],
+          monthStart: drillDown.monthKey,
+          monthEnd: drillDown.monthKey,
+        })}
+      />
     </div>
   );
 }

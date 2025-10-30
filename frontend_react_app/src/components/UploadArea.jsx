@@ -1,19 +1,28 @@
 import React, { useRef } from 'react';
+import Papa from 'papaparse';
 
 /**
  * UploadArea
- * Renders a file input for Excel files and lifts the selected file to parent via props.
+ * Accepts a .csv file, parses it using PapaParse and sends text to parent.
  *
  * Props:
- * - onFileSelected: function(File | null) -> void
+ * - onCsvParsed: function(file: File, csvText: string) -> void
  */
 // PUBLIC_INTERFACE
-export default function UploadArea({ onFileSelected }) {
+export default function UploadArea({ onCsvParsed }) {
   const inputRef = useRef(null);
 
   const handleFileChange = (e) => {
     const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
-    if (onFileSelected) onFileSelected(file);
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      // We pass raw CSV text to keep schema parsing in utils
+      if (onCsvParsed) onCsvParsed(file, text);
+    };
+    reader.readAsText(file);
   };
 
   const openFileDialog = () => {
@@ -25,15 +34,15 @@ export default function UploadArea({ onFileSelected }) {
       <input
         ref={inputRef}
         type="file"
-        accept=".xlsx,.xls"
+        accept=".csv"
         onChange={handleFileChange}
         className="visually-hidden"
-        aria-label="Upload Excel file"
+        aria-label="Upload CSV file"
       />
       <button className="btn btn-primary" onClick={openFileDialog}>
-        Select Excel File
+        Select CSV File
       </button>
-      <p className="hint">Accepted formats: .xlsx, .xls</p>
+      <p className="hint">Accepted format: .csv</p>
     </div>
   );
 }
